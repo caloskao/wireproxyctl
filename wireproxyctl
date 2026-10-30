@@ -49,6 +49,7 @@ Commands:
   add [NAME] [OPTIONS]      Create a profile (prompts for anything not given)
       -p, --port PORT         SOCKS5 port (default: first free port from $DEFAULT_PORT)
       -b, --bind ADDR         Listen address (default: $DEFAULT_BIND)
+      -f, --from FILE         Import an existing WireGuard config and start the profile
   edit [NAME]               Edit a profile, validate it and restart it if running
   remove [NAME] [-y]        Remove a profile and its keys
   uninstall [-y] [--purge]  Remove wireproxy and the unit template;
@@ -343,16 +344,49 @@ cmd_list() {
     done <<<"$profiles"
 }
 
+# Expand a leading ~ to the invoking user's home (not root's when run via sudo).
+expand_path() {
+    local path=$1 home=$HOME
+    if [[ -n ${SUDO_USER:-} ]]; then
+        home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    fi
+    case $path in
+        \~) path=$home ;;
+        \~/*) path=$home/${path#\~/} ;;
+    esac
+    printf '%s' "$path"
+}
+
+wg_template() {
+    cat <<EOF
+# Fill in [Interface] and [Peer] with the values from your VPN provider.
+
+[Interface]
+PrivateKey = <Insert Private Key Here>
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+MTU = 1280
+
+[Peer]
+PublicKey = <Insert Server Public Key Here>
+Endpoint = <IP>:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+}
+
 cmd_add() {
     require_installed
 
-    local name="" port="" bind="" interactive=false listen conf
+    local name="" port="" bind="" from="" interactive=false listen conf work unit
     while (($#)); do
         case $1 in
             -p | --port) need_value "$@"; port=$2; shift 2 ;;
             -b | --bind) need_value "$@"; bind=$2; shift 2 ;;
+            -f | --from) need_value "$@"; from=$2; shift 2 ;;
             --port=*) port=${1#*=}; shift ;;
             --bind=*) bind=${1#*=}; shift ;;
+            --from=*) from=${1#*=}; shift ;;
             -*) die "Unknown option: $1 (see '$PROG --help')" ;;
             *)
                 [[ -z $name ]] || die "Unexpected argument: $1"
@@ -370,7 +404,19 @@ cmd_add() {
     fi
     validate_name "$name"
     conf=$(profile_conf "$name")
+    unit=$(unit_name "$name")
     [[ ! -e $conf ]] || die "Profile '$name' already exists."
+
+    if [[ -z $from ]] && $interactive; then
+        from=$(ask "WireGuard config to import (leave empty to create a template)") || die "Aborted."
+    fi
+    if [[ -n $from ]]; then
+        from=$(expand_path "$from")
+        [[ -f $from && -r $from ]] || die "Cannot read WireGuard config: $from"
+        if grep -qiE '^[[:space:]]*\[(socks5|http|tcpclienttunnel|tcpservertunnel|stdiotunnel)\]' "$from"; then
+            die "$from already contains wireproxy proxy sections; import a plain WireGuard config."
+        fi
+    fi
 
     if [[ -z $port ]]; then
         port=$(next_free_port)
@@ -398,40 +444,45 @@ cmd_add() {
         warn "The SOCKS5 proxy will be reachable from other hosts without authentication."
     fi
 
+    # Assemble the profile in a private temp dir; only install it once complete.
+    make_tmp_dir
+    work="$TMP_DIR/$name.conf"
+    {
+        printf '# wireproxy profile: %s\n' "$name"
+        if [[ -n $from ]]; then
+            printf '# Imported from %s\n\n' "$from"
+            # Normalize CRLF line endings from configs exported on Windows.
+            tr -d '\r' <"$from"
+        else
+            wg_template
+        fi
+        printf '\n[Socks5]\nBindAddress = %s\n' "$listen"
+    } >"$work" || die "Failed to write the profile."
+
+    if [[ -n $from ]]; then
+        "$WP_BIN" -n -c "$work" >/dev/null ||
+            die "The imported config is invalid (see above); no profile was created."
+    fi
+
     install -d -m 700 "$CONF_DIR" || die "Failed to create $CONF_DIR."
-    (
-        umask 077
-        cat >"$conf" <<EOF
-# wireproxy profile: $name
-# Fill in [Interface] and [Peer] with the values from your VPN provider.
+    install -m 600 "$work" "$conf" || die "Failed to write $conf."
 
-[Interface]
-PrivateKey = <Insert Private Key Here>
-Address = 10.0.0.2/32
-DNS = 1.1.1.1
-MTU = 1280
-
-[Peer]
-PublicKey = <Insert Server Public Key Here>
-Endpoint = <IP>:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-
-[Socks5]
-BindAddress = $listen
-EOF
-    ) || die "Failed to write $conf."
-
-    systemctl enable "$(unit_name "$name")" 2>/dev/null ||
-        warn "Failed to enable $(unit_name "$name")."
+    if [[ -n $from ]]; then
+        systemctl enable --now "$unit" 2>/dev/null ||
+            warn "Failed to start $unit (see: journalctl -u $unit)."
+    else
+        systemctl enable "$unit" 2>/dev/null || warn "Failed to enable $unit."
+    fi
 
     ok "Profile '$name' created."
     info "  Config file:    ${YELLOW}$conf${NC}"
-    info "  systemd unit:   ${YELLOW}$(unit_name "$name")${NC} (enabled at boot)"
+    info "  systemd unit:   ${YELLOW}$unit${NC} (enabled at boot)"
     info "  SOCKS5 address: ${YELLOW}$listen${NC}"
-    info ""
-    info "${RED}Next step:${NC} fill in your real keys and endpoint:"
-    info "  $PROG edit $name"
+    if [[ -z $from ]]; then
+        info ""
+        info "${RED}Next step:${NC} fill in your real keys and endpoint:"
+        info "  $PROG edit $name"
+    fi
 }
 
 # Open $1 in the user's editor.
