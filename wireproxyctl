@@ -41,6 +41,7 @@ Usage: $PROG [COMMAND] [OPTIONS]
 
 Manage wireproxy (WireGuard to SOCKS5) profiles as systemd services.
 Run without a command to open the interactive menu.
+All commands except list, help and version require root.
 
 Commands:
   install                   Install wireproxy and the systemd unit template
@@ -74,11 +75,10 @@ make_tmp_dir() {
     trap cleanup EXIT
 }
 
-# Re-run the whole command through sudo when not root.
-ensure_root() {
-    [[ $EUID -eq 0 ]] && return 0
-    command -v sudo >/dev/null 2>&1 || die "$PROG must be run as root."
-    exec sudo -- "$(readlink -f "${BASH_SOURCE[0]}")" "$@"
+# Fail unless running as root; $1 is the command name used in the message.
+require_root() {
+    [[ $EUID -eq 0 ]] ||
+        die "'$PROG $1' requires root privileges. Run it with sudo or as root."
 }
 
 require_installed() {
@@ -278,6 +278,7 @@ EOF
 }
 
 cmd_install() {
+    require_root install
     no_args "$@"
     header "Installing wireproxy"
 
@@ -290,11 +291,12 @@ cmd_install() {
     fi
 
     write_unit
-    install -d -m 700 "$CONF_DIR" || die "Failed to create $CONF_DIR."
+    install -d -m 755 "$CONF_DIR" || die "Failed to create $CONF_DIR."
     ok "Installation finished. Create a profile with: $PROG add"
 }
 
 cmd_update() {
+    require_root update
     no_args "$@"
     require_installed
     header "Updating wireproxy"
@@ -323,9 +325,13 @@ cmd_update() {
 
 cmd_list() {
     no_args "$@"
-    local name unit bind enabled active
+    local name unit bind enabled active hidden=false
     local fmt='%-24s %-22s %-10s %s\n'
     local profiles
+
+    if [[ -d $CONF_DIR && ! ( -r $CONF_DIR && -x $CONF_DIR ) ]]; then
+        die "Cannot read $CONF_DIR. Run '$PROG list' with sudo or as root."
+    fi
     profiles=$(list_profiles)
     if [[ -z $profiles ]]; then
         info "No profiles found. Create one with: $PROG add"
@@ -336,12 +342,22 @@ cmd_list() {
     printf "$fmt" NAME LISTEN BOOT STATUS
     while IFS= read -r name; do
         unit=$(unit_name "$name")
-        bind=$(profile_bind "$name")
+        # Profiles are readable by root only, since they contain private keys.
+        if [[ -r $(profile_conf "$name") ]]; then
+            bind=$(profile_bind "$name")
+        else
+            bind='?'
+            hidden=true
+        fi
         enabled=$(systemctl is-enabled "$unit" 2>/dev/null)
         active=$(systemctl is-active "$unit" 2>/dev/null)
         # shellcheck disable=SC2059
         printf "$fmt" "$name" "${bind:--}" "${enabled:-unknown}" "${active:-unknown}"
     done <<<"$profiles"
+
+    if $hidden; then
+        warn "Listen addresses are only readable by root; run with sudo to show them."
+    fi
 }
 
 # Expand a leading ~ to the invoking user's home (not root's when run via sudo).
@@ -376,6 +392,7 @@ EOF
 }
 
 cmd_add() {
+    require_root add
     require_installed
 
     local name="" port="" bind="" from="" interactive=false listen conf work unit
@@ -464,7 +481,7 @@ cmd_add() {
             die "The imported config is invalid (see above); no profile was created."
     fi
 
-    install -d -m 700 "$CONF_DIR" || die "Failed to create $CONF_DIR."
+    install -d -m 755 "$CONF_DIR" || die "Failed to create $CONF_DIR."
     install -m 600 "$work" "$conf" || die "Failed to write $conf."
 
     if [[ -n $from ]]; then
@@ -497,6 +514,7 @@ run_editor() {
 }
 
 cmd_edit() {
+    require_root edit
     require_installed
 
     local name=${1:-} conf work unit
@@ -538,6 +556,7 @@ cmd_edit() {
 }
 
 cmd_remove() {
+    require_root remove
     local name="" yes=false
     while (($#)); do
         case $1 in
@@ -563,6 +582,7 @@ cmd_remove() {
 }
 
 cmd_uninstall() {
+    require_root uninstall
     local yes=false purge=""
     while (($#)); do
         case $1 in
@@ -611,6 +631,9 @@ cmd_uninstall() {
 
 menu() {
     local choice
+    if [[ $EUID -ne 0 ]]; then
+        warn "Not running as root: only 'List profiles' is available. Run '$PROG' with sudo for everything else."
+    fi
     while true; do
         printf '\n%s--- %s %s ---%s\n' "$BLUE" "$PROG" "$VERSION" "$NC"
         info "1. Install wireproxy"
@@ -643,8 +666,6 @@ main() {
         help | -h | --help) usage; return 0 ;;
         version | -V | --version) info "$PROG $VERSION"; return 0 ;;
     esac
-
-    ensure_root "$@"
 
     local cmd=${1:-}
     (($#)) && shift

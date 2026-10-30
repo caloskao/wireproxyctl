@@ -21,7 +21,7 @@ wireproxy 會連上 WireGuard 伺服器，並在本機提供 SOCKS5 proxy。它�
 
 - 使用 systemd 的 Linux（也支援已啟用 systemd 的 WSL 2，見 [WSL](#wsl)）
 - bash 4.3 以上、`curl`、`tar`、`sha256sum`
-- root 權限（需要時 wireproxyctl 會自動用 `sudo` 重新執行）
+- 除了 `list`、`help`、`version`，其他指令都需要 root 權限（請用 `sudo` 或 root 身分執行）
 
 支援的架構：amd64、arm64、arm、386、riscv64、s390x。
 
@@ -37,17 +37,17 @@ sudo chmod +x /usr/local/bin/wireproxyctl
 
 ```sh
 # 安裝 wireproxy 和 systemd unit template
-wireproxyctl install
+sudo wireproxyctl install
 
 # 用 VPN 供應商提供的 WireGuard 設定建立 profile
-wireproxyctl add jp --from ~/Downloads/jp-wg.conf
+sudo wireproxyctl add jp --from ~/Downloads/jp-wg.conf
 
 # 確認狀態
 wireproxyctl list
 curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
 ```
 
-不加任何參數直接執行 `wireproxyctl`，就會進入互動式選單。
+不加任何參數直接執行 `sudo wireproxyctl`，就會進入互動式選單。
 
 ## 指令
 
@@ -61,6 +61,8 @@ curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
 | `remove [NAME] [-y]` | 刪除 profile 和裡面的金鑰 |
 | `uninstall [-y] [--purge]` | 移除 wireproxy 和 unit template。加上 `--purge` 會連所有 profile 一起刪除 |
 | `help`、`version` | 顯示說明或版本 |
+
+除了 `list`、`help`、`version`，其他指令都需要 root 權限。wireproxyctl 不會替你呼叫 `sudo`，權限不足時會直接報錯並結束。`list` 不需要 root 也能執行，但因為設定檔只有 root 能讀取，監聽位址會顯示為 `?`。
 
 `add` 的選項：
 

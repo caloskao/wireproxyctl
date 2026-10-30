@@ -25,7 +25,7 @@ local ports.
 
 - Linux with systemd (including WSL 2 with systemd enabled, see [WSL](#wsl))
 - bash 4.3+, `curl`, `tar`, `sha256sum`
-- root access (wireproxyctl re-runs itself with `sudo` when needed)
+- root access for every command except `list`, `help` and `version` (run them with `sudo` or as root)
 
 Supported architectures: amd64, arm64, arm, 386, riscv64, s390x.
 
@@ -41,17 +41,17 @@ sudo chmod +x /usr/local/bin/wireproxyctl
 
 ```sh
 # Install wireproxy and the systemd unit template
-wireproxyctl install
+sudo wireproxyctl install
 
 # Create a profile from a WireGuard config exported by your VPN provider
-wireproxyctl add jp --from ~/Downloads/jp-wg.conf
+sudo wireproxyctl add jp --from ~/Downloads/jp-wg.conf
 
 # Check it
 wireproxyctl list
 curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
 ```
 
-Run `wireproxyctl` without arguments to use the interactive menu instead.
+Run `sudo wireproxyctl` without arguments to use the interactive menu instead.
 
 ## Commands
 
@@ -65,6 +65,10 @@ Run `wireproxyctl` without arguments to use the interactive menu instead.
 | `remove [NAME] [-y]` | Remove a profile and its keys |
 | `uninstall [-y] [--purge]` | Remove wireproxy and the unit template. `--purge` also deletes all profiles |
 | `help`, `version` | Show help or version |
+
+All commands except `list`, `help` and `version` require root. wireproxyctl does not
+call `sudo` for you; it stops with an error instead. `list` works without root, but
+shows `?` as the listen address because profile files are readable by root only.
 
 `add` options:
 
