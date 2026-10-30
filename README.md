@@ -33,7 +33,7 @@ Supported architectures: amd64, arm64, arm, 386, riscv64, s390x.
 
 ```sh
 sudo curl -fsSL -o /usr/local/bin/wireproxyctl \
-    https://raw.githubusercontent.com/caloskao/wireproxyctl/main/wireproxyctl
+    https://github.com/caloskao/wireproxyctl/releases/latest/download/wireproxyctl
 sudo chmod +x /usr/local/bin/wireproxyctl
 ```
 

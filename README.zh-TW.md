@@ -29,7 +29,7 @@ wireproxy 會連上 WireGuard 伺服器，並在本機提供 SOCKS5 proxy。它�
 
 ```sh
 sudo curl -fsSL -o /usr/local/bin/wireproxyctl \
-    https://raw.githubusercontent.com/caloskao/wireproxyctl/main/wireproxyctl
+    https://github.com/caloskao/wireproxyctl/releases/latest/download/wireproxyctl
 sudo chmod +x /usr/local/bin/wireproxyctl
 ```
 
