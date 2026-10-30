@@ -44,6 +44,7 @@ Run without a command to open the interactive menu.
 
 Commands:
   install                   Install wireproxy and the systemd unit template
+  update                    Update wireproxy to the latest release
   list                      List profiles with their address and status
   add [NAME] [OPTIONS]      Create a profile (prompts for anything not given)
       -p, --port PORT         SOCKS5 port (default: first free port from $DEFAULT_PORT)
@@ -202,22 +203,47 @@ detect_arch() {
 
 # --- Commands ---
 
+# Print the tag of the latest upstream release (e.g. v1.1.3).
+latest_tag() {
+    local url
+    url=$(curl -fsSLI --proto '=https' -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$UPSTREAM_REPO/releases/latest") || return 1
+    [[ $url == */tag/* ]] || return 1
+    printf '%s' "${url##*/}"
+}
+
+# Print the installed wireproxy version without a leading "v".
+installed_version() {
+    local out
+    out=$("$WP_BIN" --version 2>/dev/null) || return 1
+    out=${out##* }
+    printf '%s' "${out#v}"
+}
+
+# Download, verify and install the given release tag.
 install_binary() {
-    local arch asset url
+    local tag=$1 arch asset base
     need_cmd curl
     need_cmd tar
+    need_cmd sha256sum
 
     arch=$(detect_arch) || exit 1
     asset="wireproxy_linux_${arch}.tar.gz"
-    url="https://github.com/$UPSTREAM_REPO/releases/latest/download/$asset"
+    base="https://github.com/$UPSTREAM_REPO/releases/download/$tag"
     make_tmp_dir
 
     local progress=-sS
     [[ -t 2 ]] && progress=-#
 
-    info "Downloading $asset ..."
-    curl -fL --proto '=https' --tlsv1.2 "$progress" -o "$TMP_DIR/$asset" "$url" ||
+    info "Downloading $asset ($tag) ..."
+    if ! curl -fL --proto '=https' --tlsv1.2 "$progress" -o "$TMP_DIR/$asset" "$base/$asset" ||
+        ! curl -fsSL --proto '=https' --tlsv1.2 -o "$TMP_DIR/checksums.txt" "$base/checksums.txt"; then
         die "Download failed. Please check your internet connection."
+    fi
+
+    (cd "$TMP_DIR" && grep -E "^[0-9a-f]{64}  $asset\$" checksums.txt | sha256sum -c --status -) ||
+        die "Checksum verification failed for $asset."
+    info "Checksum verified."
 
     tar --no-same-owner -xzf "$TMP_DIR/$asset" -C "$TMP_DIR" wireproxy ||
         die "Failed to extract $asset."
@@ -255,14 +281,43 @@ cmd_install() {
     header "Installing wireproxy"
 
     if [[ -x $WP_BIN ]]; then
-        warn "wireproxy is already installed at $WP_BIN; skipping download."
+        warn "wireproxy is already installed at $WP_BIN; skipping download (use '$PROG update' to upgrade)."
     else
-        install_binary
+        local tag
+        tag=$(latest_tag) || die "Failed to look up the latest wireproxy release."
+        install_binary "$tag"
     fi
 
     write_unit
     install -d -m 700 "$CONF_DIR" || die "Failed to create $CONF_DIR."
     ok "Installation finished. Create a profile with: $PROG add"
+}
+
+cmd_update() {
+    no_args "$@"
+    require_installed
+    header "Updating wireproxy"
+
+    local current tag name unit active=()
+    current=$(installed_version) || die "Failed to read the installed wireproxy version."
+    tag=$(latest_tag) || die "Failed to look up the latest wireproxy release."
+    info "Installed: $current, latest: ${tag#v}"
+    if [[ $current == "${tag#v}" ]]; then
+        ok "wireproxy is up to date."
+        return 0
+    fi
+
+    install_binary "$tag"
+
+    while IFS= read -r name; do
+        unit=$(unit_name "$name")
+        systemctl is-active --quiet "$unit" && active+=("$unit")
+    done < <(list_profiles)
+    if ((${#active[@]})); then
+        info "Restarting running profiles: ${active[*]}"
+        systemctl restart "${active[@]}" || die "Failed to restart some profiles."
+    fi
+    ok "Update finished."
 }
 
 cmd_list() {
@@ -508,22 +563,24 @@ menu() {
     while true; do
         printf '\n%s--- %s %s ---%s\n' "$BLUE" "$PROG" "$VERSION" "$NC"
         info "1. Install wireproxy"
-        info "2. List profiles"
-        info "3. Add a profile"
-        info "4. Edit a profile"
-        info "5. Remove a profile"
-        info "6. Uninstall wireproxy"
+        info "2. Update wireproxy"
+        info "3. List profiles"
+        info "4. Add a profile"
+        info "5. Edit a profile"
+        info "6. Remove a profile"
+        info "7. Uninstall wireproxy"
         info "0. Exit"
-        read -r -p "Select [0-6]: " choice || { echo; return 0; }
+        read -r -p "Select [0-7]: " choice || { echo; return 0; }
 
         # Run each action in a subshell so that `die` only aborts that action.
         case $choice in
             1) ( cmd_install ) && confirm "Create a profile now?" && ( cmd_add ) ;;
-            2) ( cmd_list ) ;;
-            3) ( cmd_add ) ;;
-            4) ( cmd_edit ) ;;
-            5) ( cmd_remove ) ;;
-            6) ( cmd_uninstall ) ;;
+            2) ( cmd_update ) ;;
+            3) ( cmd_list ) ;;
+            4) ( cmd_add ) ;;
+            5) ( cmd_edit ) ;;
+            6) ( cmd_remove ) ;;
+            7) ( cmd_uninstall ) ;;
             0) return 0 ;;
             *) warn "Invalid option, please try again." ;;
         esac
@@ -543,6 +600,7 @@ main() {
     case $cmd in
         "") menu ;;
         install) cmd_install "$@" ;;
+        update) cmd_update "$@" ;;
         list | ls) cmd_list "$@" ;;
         add) cmd_add "$@" ;;
         edit) cmd_edit "$@" ;;
